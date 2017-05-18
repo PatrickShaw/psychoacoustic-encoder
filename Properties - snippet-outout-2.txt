@@ -1,0 +1,9 @@
+window_overlap_count = 2;
+octave_analysis_range = 1;
+softer_factor_threshold = 4;
+octave_distance_weighting = 4;
+window_time_width = 4;
+
+Average components removed per window: 126.984501
+Percent average components removed per window: 72.161224%
+Sum squared error: 3872.689052

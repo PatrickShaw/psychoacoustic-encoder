@@ -1,61 +1,80 @@
-function get_frequency
-path = 'snippet.flac';
-% Specifies how many octaves we search through when deciding whether a
-% given frequency is being masked by another frequency.
+% Where we are reading our audio from.
+read_path = 'snippet.flac';
+% Where we are writing our encoded audio to.
+write_path = 'snippet-output-1.flac';
+% Number of overlapping that happens between each window.
+window_overlap_count = 2;
+% Range of octaves to analyse for a given frequency.
 octave_analysis_range = 1;
-softer_factor_threshold = 4;
+% How soft something has to be, relative to the loudest nearby frequency,
+% to be removed from the audio.
+softer_factor_threshold = 1;
 % The further apart an amplitude spike is from other frequencies, the less 
 % likely it is to drown out said frequency. This variable specifies how 
 % much 'softer' said frequency's amplitude has to be to be considered 
 % masked by the other frequency by this equation:
-% Drowned out = softness * (wavelength_distance_weighting * (1 + wavelength_distance_factor)) >
+% Drowned out = softness * (1/(octave_distance_weighting * octave_difference + 1)) >
 % softer_factor_threshold.
-wavelength_distance_weighting = 2;
+octave_distance_weighting = 0;
 % How much of the audio we are analysing, in milliseconds, at any given
-% amount of time
+% amount of time.
 window_time_width = 4;
-[o_y, o_fs] = audioread(path);
-plot(fftshift(fft(o_y(:, 1))));
-audio_info = audioinfo(path);
+
+% Read the audio.
+[o_y, o_fs] = audioread(read_path);
+n_y = zeros(size(o_y));
+audio_info = audioinfo(read_path);
 disp(audio_info);
 
-% Number of elements per window
-window_sample_width = round(audio_info.SampleRate * (window_time_width / 1000)); 
-audio_sample_len = size(o_y, 1);
-w = 1;
-channel_len = size(o_y, 2);
 total_components_removed = 0;
 total_windows = 0;
+
+% Number of elements per window.
+window_sample_width = round(o_fs * (window_time_width / 1000)); 
+audio_sample_len = size(o_y, 1);
+channel_len = size(o_y, 2);
+total_components = 0;
 % This loop analyses audio in intervals of <window_sample_width> samples
 % and removes all frequencies that are considered to be masked by other
 % frequencies.
+w = 1;
 while w <= audio_sample_len
     end_window_index = min(w + (window_sample_width - 1), audio_sample_len);
     for c = 1:channel_len
         % Grab the fast fourier transform so that we can determine what 
-        % frequencies are being overpowered by other frequencies in the sample
+        % frequencies are being overpowered by other frequencies in the
+        % sample.
         fft_y = fft(o_y(w:end_window_index, c));
         fft_y_len = size(fft_y, 1);
         % Abs the FFT so we can look at soley the amplitude of the frequencies.
         % The FFT, otherwise, would be covered in complex numbers.
         fft_y_abs = abs(fft_y);
-        f = octave_analysis_range;
-        while f <= fft_y_len - octave_analysis_range
+        % Ignore the 0Hz
+        f = 2; 
+        while f <= fft_y_len
             amplitude = fft_y_abs(f);
-            if amplitude ~= 0
-                other_f = max(1, f - (2^octave_analysis_range));
-                other_f_end_index = min(f + octave_analysis_range, fft_y_len);
+            frequency = fft_index_to_hz(f, o_fs, fft_y_len);
+            if amplitude ~= 0 && frequency ~= 0
+                other_f = max(2, floor(octave_to_fft_index(-octave_analysis_range, frequency, o_fs, fft_y_len)));
+                other_frequency = fft_index_to_hz(f, o_fs, fft_y_len);
+                other_f_end_index = min(fft_y_len, ceil(octave_to_fft_index(octave_analysis_range, frequency, o_fs, fft_y_len)));
                 % The maximum amount of 'softness' out of all the frequencies 
                 % that we compared the frequency we're look at with.
                 max_softer_factor = 0;
-                wavelength = 1/f;
                 while other_f <= other_f_end_index
-                    other_wavelength=  1/other_f;
-                    wavelength_distance_factor = abs(wavelength - other_wavelength) / min(wavelength, other_wavelength);
-                    other_amplitude = fft_y_abs(other_f);
-                    softness = other_amplitude/amplitude;
-                    relative_softness = softness * (wavelength_distance_weighting * (1 - wavelength_distance_factor));
-                    max_softer_factor = max(relative_softness, max_softer_factor);
+                    if other_frequency ~= 0 && f ~= other_f
+                        % How disimilar two wavelengths are to each other in.
+                        octave_difference = abs(octaves(frequency, other_frequency));
+                        other_amplitude = fft_y_abs(other_f);
+                        % How soft the analysed frequency is to the other
+                        % frequency.
+                        softness = other_amplitude/amplitude;
+                        % The weighted softness (we prefer not to remove
+                        % the component if the other frequency is too
+                        % distant).
+                        relative_softness = softness * (1/(octave_distance_weighting * octave_difference + 1));
+                        max_softer_factor = max(relative_softness, max_softer_factor);
+                    end
                     other_f = other_f + 1;
                 end
                 if max_softer_factor >= softer_factor_threshold
@@ -66,19 +85,73 @@ while w <= audio_sample_len
             f = f + 1;
         end
         % disp(total_windows);
-        n_y = ifft(fft_y, 'symmetric');
-        for i = 1:fft_y_len            
-            o_y(w + (i - 1), c) = n_y(i);
-        end
+        ifft_y = ifft(fft_y, 'symmetric');
+        n_y(w:end_window_index, c) = ifft_y;
         % Add 1 window per channel
         total_windows = total_windows + 1;
+        total_components = total_components + fft_y_len;
+    end
+    if total_windows == 100
+        figure;
+        hold on;
+        plot_fft(o_y(w:end_window_index, c), o_fs, fft_y_len);
+        plot_fft_2(fft_y, o_fs, fft_y_len);
+        hold off;
+        legend(sprintf('Original %s', read_path), sprintf('Encoded %s', write_path));
+        title(sprintf('Sample window (%d-%d, channel %d) - Amplitude spectrum', w, end_window_index, c));
     end
     % Ideally we would slide over the samples but that would take too long,
     % instead, increase the window starting position by half of the window
     % width.
-    w = w + floor(window_sample_width / 2);
+    w = w + ceil(window_sample_width / window_overlap_count);
 end
+
+figure;
+plot_fft(o_y, o_fs, audio_sample_len);
+title(sprintf('Original %s - Amplitude spectrum', read_path));
+
+figure;
+plot_fft(n_y, o_fs, audio_sample_len);
+title(sprintf('Encoded %s - Amplitude spectrum', write_path));
+
+sound(n_y, o_fs);
+audiowrite(write_path, n_y, o_fs, 'BitsPerSample', audio_info.BitsPerSample);
+
 average_components_removed_per_window = total_components_removed / total_windows;
-plot(abs(fftshift(fft(o_y(:,1)))));
-sound(o_y, o_fs);
-audiowrite('snippet-output.flac', o_y, o_fs, 'BitsPerSample', audio_info.BitsPerSample);
+fprintf('Average components removed per window: %f\n', average_components_removed_per_window);
+
+ratio_average_components_removed_vs_total_components = total_components_removed / total_components;
+fprintf('Percent average components removed per window: %f%%\n', ratio_average_components_removed_vs_total_components * 100);
+
+fprintf('Sum squared error: %f', sum_squared_error(o_y, n_y));
+
+function result = sum_squared_error(original, new)
+    result = sum((original - new).^2);
+end
+function hz = fft_index_to_hz(index, fs, fft_len)
+    hz = index * hz_per_fft_index(fs, fft_len);
+end
+function index = octave_to_fft_index(octaves, original_hz, fs, fft_len)
+    index = octave_frequency(octaves, original_hz) / hz_per_fft_index(fs, fft_len);
+end
+function hz = hz_per_fft_index(fs, fft_len)
+    hz = fs/(fft_len + 1);
+end
+function f = octave_frequency(octaves, hz)
+    f = (2^octaves) * hz;
+end
+function o = octaves(frequency_1, frequency_2)
+    o = log2(frequency_1 / frequency_2);
+end
+function plot_fft_2(fft_y, sample_rate, total_samples)
+    P2 = abs(fft_y/total_samples);
+    P1 = P2(1:floor(total_samples/2)+1);
+    P1(2:end-1) = 2*P1(2:end-1);
+    Q = sample_rate*(0:(total_samples/2))/total_samples;
+    plot(Q,P1);
+    xlabel('Frequency (Hz)');
+    ylabel('Amplitude');
+end
+function plot_fft(samples, sample_rate, total_samples)
+    plot_fft_2(fft(samples), sample_rate, total_samples);
+end
