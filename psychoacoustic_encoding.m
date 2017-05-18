@@ -1,4 +1,4 @@
-function [n_y, total_components, total_windows, total_components_removed] = encode(o_y, n_y, o_fs, window_overlap_count, window_time_width, octave_analysis_range, softer_factor_threshold, octave_distance_weighting, read_path, write_path)
+function [n_y, total_components, total_windows, total_components_removed] = psychoacoustic_encoding(o_y, o_fs, window_overlap_count, window_time_width, octave_analysis_range, softer_factor_threshold, octave_distance_weighting, read_path, write_path, show_plot)
     total_components_removed = 0;
     total_windows = 0;
 
@@ -65,7 +65,7 @@ function [n_y, total_components, total_windows, total_components_removed] = enco
             total_windows = total_windows + 1;
             total_components = total_components + fft_y_len;
         end
-        if total_windows == 100
+        if total_windows == 100 && show_plot == 0
             figure;
             hold on;
             plot_fft(o_y(w:end_window_index, c), o_fs, fft_y_len);
